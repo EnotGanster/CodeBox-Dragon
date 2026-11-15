@@ -1,0 +1,77 @@
+name: CodeBox Dragon - Build D8 DEX
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-d8-dex:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Build Android-compatible D8 JAR
+        shell: bash
+        env:
+          R8_VERSION: '8.7.18'
+        run: |
+          set -euo pipefail
+
+          echo 'Downloading official Google R8/D8 Java tool...'
+          curl --fail --location --silent --show-error --retry 3 \
+            "https://storage.googleapis.com/r8-releases/raw/${R8_VERSION}/r8.jar" \
+            --output r8.jar
+          test -s r8.jar
+          unzip -t r8.jar > /dev/null
+          unzip -l r8.jar com/android/tools/r8/D8.class
+
+          # GitHub's Ubuntu Android runners normally have this platform installed.
+          PLATFORM_JAR="${ANDROID_HOME}/platforms/android-35/android.jar"
+          if [ ! -f "$PLATFORM_JAR" ]; then
+            echo 'Installing Android platform 35...'
+            "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" \
+              --install 'platforms;android-35'
+          fi
+          test -s "$PLATFORM_JAR"
+
+          mkdir -p d8-output
+          echo 'Converting the D8/R8 Java classes to Android DEX (min API 26)...'
+          java -Xmx4g -cp r8.jar com.android.tools.r8.D8 \
+            --release \
+            --min-api 26 \
+            --lib "$PLATFORM_JAR" \
+            --output d8-output \
+            r8.jar
+
+          test -s d8-output/classes.dex
+          echo 'Generated DEX files:'
+          ls -lh d8-output/classes*.dex
+
+          # Keep the original Java entries for the existing Dragon inspector,
+          # and add classes.dex/classes2.dex/... for Android DexClassLoader.
+          cp r8.jar d8.jar
+          jar uf d8.jar -C d8-output .
+          unzip -t d8.jar > /dev/null
+          unzip -l d8.jar classes.dex
+          unzip -l d8.jar com/android/tools/r8/D8.class
+
+          # The Dragon ZIP installer accepts a ZIP containing just d8.jar.
+          zip -9 CodeBoxDragon-D8.zip d8.jar
+          unzip -t CodeBoxDragon-D8.zip
+          sha256sum d8.jar CodeBoxDragon-D8.zip
+
+      - name: Upload ZIP for installation in Dragon
+        uses: actions/upload-artifact@v4
+        with:
+          name: CodeBoxDragon-D8
+          path: CodeBoxDragon-D8.zip
+          if-no-files-found: error
+          retention-days: 7
